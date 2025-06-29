@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 import torch
 import gpytorch
@@ -7,37 +8,12 @@ from scipy.stats import qmc
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import seaborn as sns
+from copy import deepcopy
+sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
+from helper import set_seed, device, bo_config
 
 # set seaborn style
 sns.set_theme(style='darkgrid', palette='deep')
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-
-class Options(object):
-    def __init__(self, **kwargs):
-        super(Options, self).__init__()
-        self.__dict__.update(kwargs)
-        
-BO_config = Options(
-    seed=1,  # random seed for reproducibility
-    # the original paper uses SGD; we use Adam instead
-    # training HPs
-    num_epochs=500,
-    default_learning_rate=0.1,
-    kernel='RBF',  # 'RBF' or 'Matern'
-    # kernel='Matern', 
-    results_dir=pathlib.Path('results'),
-    acquisitiion_optimization_budget=20,  # budget for acquisition function optimization
-    hp_search_space=np.array([[0.00001, 1.0]]) # log transformation makes sense
-)
-
-# set the random seed for reproducibility
-np.random.seed(BO_config.seed)
-torch.manual_seed(BO_config.seed)
-if device == torch.device("cuda"):
-    torch.cuda.manual_seed(BO_config.seed) 
-    
 
 '''
 we let BO consider maximization problem
@@ -47,8 +23,9 @@ def get_sobol_init(num_sample, num_dim=1, bounds=None):
     """
     Generate Sobol sequence samples in the specified bounds
     """
-    sobol = qmc.Sobol(d=num_dim)
-    samples = sobol.random(n=num_sample, workers=2)
+    # NOTE: sobol sequence need to set the seed explicitly
+    sobol = qmc.Sobol(d=num_dim, seed=bo_config.seed)  # Add explicit seed for reproducibility
+    samples = sobol.random(n=num_sample)
     # will ample in [0, 1) by default
     if bounds is not None:
         low, high = bounds[:, 0], bounds[:, 1]
@@ -84,23 +61,23 @@ class ExactGP(gpytorch.models.ExactGP):
 class BayesianOptimization:
     def __init__(self, 
                  unknown_function, 
-                 search_space=None,
-                 search_space_transformation=None,
-                 budget=10, kernel='RBF',
+                 bo_config,
                  ):
         """
         Initialize the Bayesian Optimization model
         """
         self.unknown_function = unknown_function
-        self.search_space = search_space if search_space is not None else np.array([[0.0, 1.0]])
-        self.sst = search_space_transformation
+        self.config = bo_config
+        # self.search_space = search_space if search_space is not None else np.array([[0.0, 1.0]])
+        self.search_space = self.config.hp_search_space
+        self.sst = self.config.hp_search_space_transformation
         if self.sst is not None:
-            self.original_search_space = self.search_space.copy()
+            self.original_search_space = deepcopy(self.search_space)
             self.search_space = self.transform_search_space(self.search_space)
             
-        self.budget = budget
-        self.remaining_budget = budget
-        self.kernel = kernel
+        self.budget = self.config.budget
+        self.remaining_budget = deepcopy(self.budget)
+        self.kernel = self.config.kernel
 
         # sample history        
         self.sampled_x = []
@@ -145,15 +122,12 @@ class BayesianOptimization:
 
             self.train_x = torch.tensor(self.sampled_x, dtype=torch.float32).reshape(-1)
             self.train_y = torch.tensor(self.sampled_y, dtype=torch.float32).reshape(-1)
-            
-            self.remaining_budget = self.budget - init_budget
         else:
             raise ValueError(f"Unknown initialization method: {method}")    
 
         # find the current incumbent
         _, incumbent_x, incumbent_y = self.get_incumbent()
-        print(f"Initial incumbent x: {incumbent_x}, y: {incumbent_y}")  
-            
+        print(f"Initial incumbent x: {incumbent_x}, y: {incumbent_y}\n")         
         # subtract the budget
         self.remaining_budget = self.budget - init_budget
         
@@ -165,16 +139,16 @@ class BayesianOptimization:
         self.likelihood.train()
         
         optimizer = torch.optim.Adam(self.gp_model.parameters(), 
-                                     lr=BO_config.default_learning_rate)
+                                     lr=self.config.gp_learning_rate)
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.gp_model)
         
-        for _ in range(BO_config.num_epochs):
+        for _ in range(self.config.gp_num_epochs):
             optimizer.zero_grad()
             output = self.gp_model(self.train_x)
             loss = -mll(output, self.train_y).sum()
             loss.backward()
             optimizer.step()
-            if _ % (BO_config.num_epochs/5) == 0:
+            if _ % (self.config.gp_num_epochs/5) == 0:
                 print(f'Epoch {_}: GP Loss = {loss.item()}')
 
     
@@ -219,11 +193,14 @@ class BayesianOptimization:
             return acquisition_value
 
     def optimize_acquisition(self, acuisition_func): 
-        # use scipy.optimize.minimize (similary to BoTorch)
+        '''
+        maximize the acquisition function with 
+        scipy.optimize.minimize (similary to BoTorch)
+        '''
         best_x = None
         best_acquisition_value = -np.inf
         
-        for _ in range(BO_config.acquisitiion_optimization_budget):
+        for _ in range(self.config.acquisitiion_optimization_budget):
             x_0 = np.random.uniform(self.search_space[:, 0], 
                                     self.search_space[:, 1])
             res = minimize(lambda x: -acuisition_func(x), 
@@ -324,12 +301,19 @@ class BayesianOptimization:
         ax[1].legend()
         ax[1].grid()
         
+        if self.sst is not None:
+            # let the tick to be the original search space
+            original_tick = self.transform_search_space(self.search_space, inverse=True)
+            ax[0].set_xticks(original_tick[:, 0])
+            ax[0].set_xticklabels([f'{t:.2f}' for t in original_tick[:, 0]])
+            ax[1].set_xticks(original_tick[:, 0])
+            ax[1].set_xticklabels([f'{t:.2f}' for t in original_tick[:, 0]])
         
         fig.suptitle(f'Bayesian Optimization Iteration {i + 1}', fontsize=16)
         fig.tight_layout()
         
         # save the figure
-        fig_path = BO_config.results_dir / f'bo_iterations_results_{i + 1}.png'
+        fig_path = self.config.results_dir / f'bo_iterations_results_{i + 1}.png'
         fig_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(fig_path)
         
@@ -341,7 +325,7 @@ class BayesianOptimization:
             print("No sampled points to plot.")
             return
         
-        _, best_x, best_y = self.get_incumbent()
+        best_idx, best_x, best_y = self.get_incumbent()
         x = np.linspace(self.search_space[0, 0], self.search_space[0, 1], 100)
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             self.gp_model.eval()
@@ -357,99 +341,68 @@ class BayesianOptimization:
         ax[0].fill_between(x, mean - s * std, mean + s * std, 
                            color='lightblue', alpha=0.5, label='3-$\sigma$ Confidence Interval')
         ax[0].scatter(self.sampled_x, self.sampled_y, color='k', label='Sampled Points')
-        ax[0].scatter(self.transform_search_space(best_x), best_y, marker='*', s=200,
-                      color='yellow', label='Current Best Point', zorder=5)
-        # add a second axis tick for the original search space
-        # if self.sst is not None:
-        ax[0].set_title('Objective Function with Sampled Points')
+        best_x_original = best_x
+        if self.sst is not None:
+            # transform the best_x back to the original search space
+            best_x_original = self.transform_search_space(best_x, inverse=True)
+        ax[0].scatter(best_x_original, best_y, marker='*', s=200,
+                      color='orange', label='Current Best Point', zorder=5)
+        ax[0].axvline(x=best_x_original, color='orange', linestyle='--',
+                      label='Current Best Point Line')
+        
+        ax[0].set_title('Surrogatem Model with Sampled Points')
         ax[0].set_xlabel('x')
         ax[0].set_ylabel('f(x)')
         ax[0].legend()
         ax[0].grid()
         
+        if self.sst is not None:
+            # let the tick to be the original search space
+            original_tick = self.transform_search_space(self.search_space, inverse=True)
+            ax[0].set_xticks(original_tick[:, 0])
+            ax[0].set_xticklabels([f'{t:.2f}' for t in original_tick[:, 0]])
+        
         # plot sample history along iterations
-        ax[1].plot(range(len(self.sampled_x)), self.sampled_y, 
-                      color='k', label='Sampled Points', marker='o')
-        ax[1].axhline(y=best_y, color='green', linestyle='--', label='Current Best Value')
+        ax[1].plot(range(1, len(self.sampled_x) + 1),
+                   self.sampled_y, marker='o', label='Sampled Points', color='k')
+        # plot shaded area before the initial budget
+        ax[1].fill_between(range(1, self.config.init_budget+1),
+                           [min(self.sampled_y)] * (self.config.init_budget),
+                           [max(self.sampled_y)] * (self.config.init_budget),
+                           color='gray', alpha=0.5, label='Initial Budget Area')
+        ax[1].axhline(y=best_y, color='orange', linestyle='--', label='Current Best Value')
+        ax[1].scatter(best_idx+1, best_y, marker='*', s=200,
+                      color='orange', label='Current Best Point', zorder=5)
         ax[1].set_title('Optimization History')
         ax[1].set_xlabel('Iteration')
         ax[1].set_ylabel('f(x)')
         # ensure the x-ticks are integers
-        ax[1].set_xticks(range(len(self.sampled_x)))
+        ax[1].set_xticks(range(1, len(self.sampled_x)+1))
         ax[1].legend()
         ax[1].grid()
+        
         
         fig.suptitle('Bayesian Optimization History', fontsize=16)
         fig.tight_layout()
 
         # save the figure
-        fig_path = BO_config.results_dir / 'bo_history.png'
+        fig_path = self.config.results_dir / 'bo_history.png'
         fig_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(fig_path)     
         
 def simple_objectve_function(x):
     """
-    An example objective function works for search space [1, 10000]
-    the max is located at x = 1000
+    An example objective function
     """
     return -(x - 0.5)**2 + 3 * np.sin(x * 3) + 0.5
 
 
-def main():
-
-    
+def main(config):
+    set_seed(config.seed, device=device)
     bo = BayesianOptimization(unknown_function=simple_objectve_function,
-                             search_space=np.array([[0.001, 4.0]]),
-                            #  search_space_transformation='log10',
-                             budget=10, kernel=BO_config.kernel)
-    bo.bayesian_optimization()
+                              bo_config=config)
+    bo.bayesian_optimization(init_budget=config.init_budget)
     bo.plot_bo_history()
-    
-    # result = minimize(lambda x: -simple_objectve_function(x), 
-    #                   x0=np.array([0.2]), 
-    #                   bounds=[(0.0, 1.0)], 
-    #                   method='L-BFGS-B')
-    # print(f"Optimal x: {result.x[0]}, Optimal value: {-result.fun}")
-    # # plot the objective function
-
-    # x = np.linspace(0, 1, 100)
-    # y = simple_objectve_function(x)
-    # plt.plot(x, y, label='Objective Function')
-    # plt.scatter(result.x, -result.fun, color='red', label='Optimal Point')
-    # plt.title('Objective Function with Optimal Point')
-    # plt.xlabel('x')
-    # plt.ylabel('f(x)')
-    # plt.legend()
-    # plt.grid()
-    # # save the figure
-    # fig_path = pathlib.Path('bo_objective_function.png')
-    # fig_path.parent.mkdir(parents=True, exist_ok=True)
-    # plt.savefig(fig_path)
-    
-    # # uniformly sample the search space
-    # # check whether the log and exp transformation makes sense
-    # num_dim = 1
-    # num_sample = 10
-    # search_space = np.array([[0.00001, 1.0]])
-    # sampled_points = np.random.uniform(search_space[:, 0], 
-    #                                    search_space[:, 1], 
-    #                                    size=(num_sample, num_dim))
-    # # sort the sampled points
-    # sampled_points = np.sort(sampled_points, axis=0)
-    
-    # # sample log transformation
-    # log_search_space = np.log(search_space)
-    # log_sampled_points = np.random.uniform(log_search_space[:, 0],
-    #                                        log_search_space[:, 1], 
-    #                                        size=(num_sample, num_dim))
-    # log_sampled_points = np.sort(log_sampled_points, axis=0)
-    # original_sampled_points = np.exp(log_sampled_points)
-    
-    # print(f"Sampled points: {sampled_points}")
-    # print(f"Log-transformed sampled points: {log_sampled_points}")
-    # print(f"Original sampled points after exp transformation: {original_sampled_points}")
-    # # use exponential transformation then sample again
-    
 
 if __name__ == '__main__':
-    main()
+    main(config=bo_config)
