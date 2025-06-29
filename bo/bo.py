@@ -85,6 +85,7 @@ class BayesianOptimization:
     def __init__(self, 
                  unknown_function, 
                  search_space=None,
+                 search_space_transformation=None,
                  budget=10, kernel='RBF',
                  ):
         """
@@ -92,6 +93,10 @@ class BayesianOptimization:
         """
         self.unknown_function = unknown_function
         self.search_space = search_space if search_space is not None else np.array([[0.0, 1.0]])
+        self.sst = search_space_transformation
+        if self.sst is not None:
+            self.original_search_space = self.search_space.copy()
+            self.search_space = self.transform_search_space(self.search_space)
             
         self.budget = budget
         self.remaining_budget = budget
@@ -100,13 +105,41 @@ class BayesianOptimization:
         # sample history        
         self.sampled_x = []
         self.sampled_y = []
-                
+        
+    def transform_search_space(self, x, inverse=False):
+        # """
+        if self.sst == 'log10':
+            transformed_x = np.log10(x) if not inverse else 10 ** x
+        else:
+            raise ValueError(f"Search space transformation method {self.sst} not implemented.")
+        return transformed_x
+    
+    def get_incumbent(self):
+        """
+        Get the current incumbent value and its corresponding x
+        """
+        if len(self.sampled_y) == 0:
+            return None, None
+        
+        incumbent_index = torch.argmax(torch.tensor(self.sampled_y)).item()
+        incumbent_x = self.train_x[incumbent_index].item()
+        incumbent_y = self.train_y[incumbent_index].item()
+        
+        if self.sst is not None:
+            incumbent_x = self.transform_search_space(incumbent_x, inverse=True)
+        
+        return incumbent_index, incumbent_x, incumbent_y
+    
     def initialize_bayesian_optimization(self, method='sobol', init_budget=3):
         if method == 'sobol' and init_budget > 0:
             sobol_samples = get_sobol_init(num_sample=init_budget, 
                                            bounds=self.search_space).reshape(-1).tolist()
-            for sample in sobol_samples:
-                y_value = self.unknown_function(sample)
+            # for sample in sobol_samples:
+            for i, sample in enumerate(sobol_samples):
+                sample_original = self.transform_search_space(sample, inverse=True) \
+                    if self.sst is not None else sample
+                print(f"Evaluating sample {i + 1}/{init_budget}: {sample_original}") 
+                y_value = self.unknown_function(sample_original)
                 self.sampled_x.append(sample)
                 self.sampled_y.append(y_value)
 
@@ -118,10 +151,9 @@ class BayesianOptimization:
             raise ValueError(f"Unknown initialization method: {method}")    
 
         # find the current incumbent
-        if len(self.sampled_y) > 0:
-            self.incumbent = torch.max(torch.tensor(self.sampled_y)).item()
-            print(f"Initial incumbent value: {self.incumbent}")
-
+        _, incumbent_x, incumbent_y = self.get_incumbent()
+        print(f"Initial incumbent x: {incumbent_x}, y: {incumbent_y}")  
+            
         # subtract the budget
         self.remaining_budget = self.budget - init_budget
         
@@ -216,6 +248,7 @@ class BayesianOptimization:
         self.initialize_bayesian_optimization(method='sobol', init_budget=init_budget)
         # 2. loop until budget
         for i in range(init_budget, self.budget):
+            print(f"Starting iteration {i + 1}")
             # GP
             self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
             self.gp_model = ExactGP(self.train_x, self.train_y, 
@@ -228,7 +261,10 @@ class BayesianOptimization:
             
             self.plot_iteration_results(i, next_x)
             # 5. query the unknown function
-            next_y = self.unknown_function(next_x)
+            next_x_original = self.transform_search_space(next_x, inverse=True) \
+                if self.sst is not None else next_x
+            print(f"Evaluating next x: {next_x_original}")
+            next_y = self.unknown_function(next_x_original)
             # 6. update the training data
             self.sampled_x.append(next_x)
             self.sampled_y.append(next_y)
@@ -237,13 +273,12 @@ class BayesianOptimization:
             self.train_y = torch.tensor(self.sampled_y, dtype=torch.float32)
         
             print(f"Iteration {i + 1}: Next x = {next_x}, Next y = {next_y}")
-            self.incumbent = torch.max(self.train_y).item()
-            print(f"Current incumbent value: {self.incumbent}")
+            # update the incumbent
+            _, incumbent_x, incumbent_y = self.get_incumbent()
+            print(f"Current incumbent x: {incumbent_x}, y: {incumbent_y}\n")
             
         # return the best found point
-        incumbent_index = torch.argmax(self.train_y).item()
-        best_x = self.train_x[incumbent_index].item()
-        best_y = self.train_y[incumbent_index].item()  
+        _, best_x, best_y = self.get_incumbent()
         print(f"Best x: {best_x}, Best y: {best_y}")
         return best_x, best_y
     
@@ -298,9 +333,64 @@ class BayesianOptimization:
         fig_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(fig_path)
         
+    def plot_bo_history(self, s=3):
+        """
+        Plot the history of the Bayesian Optimization
+        """
+        if len(self.sampled_x) == 0 or len(self.sampled_y) == 0:
+            print("No sampled points to plot.")
+            return
+        
+        _, best_x, best_y = self.get_incumbent()
+        x = np.linspace(self.search_space[0, 0], self.search_space[0, 1], 100)
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            self.gp_model.eval()
+            self.likelihood.eval()
+            x_tensor = torch.tensor(x, dtype=torch.float32).reshape(-1, 1)
+            pred = self.likelihood(self.gp_model(x_tensor))
+            # get the mean and std of the GP model
+            mean = pred.mean.numpy()
+            std = pred.stddev.numpy()
+            
+        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+        ax[0].plot(x, mean, label='GP Mean', color='blue')
+        ax[0].fill_between(x, mean - s * std, mean + s * std, 
+                           color='lightblue', alpha=0.5, label='3-$\sigma$ Confidence Interval')
+        ax[0].scatter(self.sampled_x, self.sampled_y, color='k', label='Sampled Points')
+        ax[0].scatter(self.transform_search_space(best_x), best_y, marker='*', s=200,
+                      color='yellow', label='Current Best Point', zorder=5)
+        # add a second axis tick for the original search space
+        # if self.sst is not None:
+        ax[0].set_title('Objective Function with Sampled Points')
+        ax[0].set_xlabel('x')
+        ax[0].set_ylabel('f(x)')
+        ax[0].legend()
+        ax[0].grid()
+        
+        # plot sample history along iterations
+        ax[1].plot(range(len(self.sampled_x)), self.sampled_y, 
+                      color='k', label='Sampled Points', marker='o')
+        ax[1].axhline(y=best_y, color='green', linestyle='--', label='Current Best Value')
+        ax[1].set_title('Optimization History')
+        ax[1].set_xlabel('Iteration')
+        ax[1].set_ylabel('f(x)')
+        # ensure the x-ticks are integers
+        ax[1].set_xticks(range(len(self.sampled_x)))
+        ax[1].legend()
+        ax[1].grid()
+        
+        fig.suptitle('Bayesian Optimization History', fontsize=16)
+        fig.tight_layout()
+
+        # save the figure
+        fig_path = BO_config.results_dir / 'bo_history.png'
+        fig_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(fig_path)     
+        
 def simple_objectve_function(x):
     """
-    An example objective function for testing with a shallow local maximum and a steep local minimum. 
+    An example objective function works for search space [1, 10000]
+    the max is located at x = 1000
     """
     return -(x - 0.5)**2 + 3 * np.sin(x * 3) + 0.5
 
@@ -309,9 +399,11 @@ def main():
 
     
     bo = BayesianOptimization(unknown_function=simple_objectve_function,
-                             search_space=np.array([[0.0, 4.0]]),
+                             search_space=np.array([[0.001, 4.0]]),
+                            #  search_space_transformation='log10',
                              budget=10, kernel=BO_config.kernel)
     bo.bayesian_optimization()
+    bo.plot_bo_history()
     
     # result = minimize(lambda x: -simple_objectve_function(x), 
     #                   x0=np.array([0.2]), 
