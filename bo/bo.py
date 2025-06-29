@@ -48,7 +48,7 @@ def get_sobol_init(num_sample, num_dim=1, bounds=None):
     Generate Sobol sequence samples in the specified bounds
     """
     sobol = qmc.Sobol(d=num_dim)
-    samples = sobol.random(n=num_sample) 
+    samples = sobol.random(n=num_sample, workers=2)
     # will ample in [0, 1) by default
     if bounds is not None:
         low, high = bounds[:, 0], bounds[:, 1]
@@ -85,7 +85,8 @@ class BayesianOptimization:
     def __init__(self, 
                  unknown_function, 
                  search_space=None,
-                 budget=10, kernel='RBF'):
+                 budget=10, kernel='RBF',
+                 ):
         """
         Initialize the Bayesian Optimization model
         """
@@ -251,7 +252,8 @@ class BayesianOptimization:
         Plot the results of the Bayesian Optimization iterations
         """
         x = np.linspace(self.search_space[0, 0], self.search_space[0, 1], 100)
-        y = [self.unknown_function(xi) for xi in x]
+        # the true objective might be expensive to evaluate
+        # y = [self.unknown_function(xi) for xi in x]
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             self.gp_model.eval()
             self.likelihood.eval()
@@ -263,7 +265,7 @@ class BayesianOptimization:
         
         fig, ax= plt.subplots(2, 1, figsize=(10, 8))
         # plot the objective function
-        ax[0].plot(x, y, label='Objective Function', color='r')
+        # ax[0].plot(x, y, label='Objective Function', color='r')
         ax[0].plot(x, mean, label='GP Mean', color='blue')
         ax[0].fill_between(x, mean - s * std, mean + s * std, 
                            color='lightblue', alpha=0.5, label=f'{s}-$\sigma$ Confidence Interval')

@@ -142,8 +142,10 @@ def evaluate_accuracy(model, data_loader):
     accuracy = 100 * correct_test / total_test
     return accuracy
 
-def train_restnet_with_lr(model, train_loader, test_loader,
+def train_restnet_with_lr(train_loader, test_loader, model=None,
                           learning_rate=0.01):
+    if model is None:
+        model = ResNet().to(device)
     loss_fc = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), 
                      lr=learning_rate)
