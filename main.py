@@ -75,7 +75,7 @@ if __name__ == '__main__':
     main(config=task_config)
 
     # Comment out the following to test without the log10 transformation
-    # or check the results in the results_no_transform directory
+    # or check the results in the saved_results_no_transform directory
     # import pathlib
     # from copy import deepcopy
     # print('Running Bayesian Optimization for ResNet without'

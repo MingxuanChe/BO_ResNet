@@ -359,6 +359,7 @@ class BayesianOptimization:
                 ax_top.set_xticklabels(
                     [f'{t:.5f}' for t in original_ticks_values])
                 ax_top.set_xlabel('x (original scale)')
+                axis.set_xlabel('x (log scale)')
 
         fig.suptitle(f'Bayesian Optimization Iteration {i + 1}', fontsize=16)
         fig.tight_layout()
