@@ -265,7 +265,6 @@ class BayesianOptimization:
         """
         x = np.linspace(self.search_space[0, 0], self.search_space[0, 1], 100)
         # the true objective might be expensive to evaluate
-        # y = [self.unknown_function(xi) for xi in x]
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             self.gp_model.eval()
             self.likelihood.eval()
@@ -301,13 +300,17 @@ class BayesianOptimization:
         ax[1].legend()
         ax[1].grid()
         
+        
         if self.sst is not None:
-            # let the tick to be the original search space
-            original_tick = self.transform_search_space(self.search_space, inverse=True)
-            ax[0].set_xticks(original_tick[:, 0])
-            ax[0].set_xticklabels([f'{t:.2f}' for t in original_tick[:, 0]])
-            ax[1].set_xticks(original_tick[:, 0])
-            ax[1].set_xticklabels([f'{t:.2f}' for t in original_tick[:, 0]])
+            # Create secondary x-axis at the top to show the 
+            # original search space values
+            for axis in ax:
+                ax_top = axis.secondary_xaxis('top')
+                ax_ticks_values = axis.get_xticks()
+                original_ticks_values = self.transform_search_space(ax_ticks_values, inverse=True)
+                ax_top.set_xticks(ax_ticks_values)
+                ax_top.set_xticklabels([f'{t:.5f}' for t in original_ticks_values])
+                ax_top.set_xlabel('x (original scale)')
         
         fig.suptitle(f'Bayesian Optimization Iteration {i + 1}', fontsize=16)
         fig.tight_layout()
@@ -336,15 +339,15 @@ class BayesianOptimization:
             mean = pred.mean.numpy()
             std = pred.stddev.numpy()
             
-        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+        fig, ax = plt.subplots(2, 1, figsize=(10, 8))
         ax[0].plot(x, mean, label='GP Mean', color='blue')
         ax[0].fill_between(x, mean - s * std, mean + s * std, 
                            color='lightblue', alpha=0.5, label='3-$\sigma$ Confidence Interval')
         ax[0].scatter(self.sampled_x, self.sampled_y, color='k', label='Sampled Points')
-        best_x_original = best_x
+        best_x_original = best_x 
         if self.sst is not None:
-            # transform the best_x back to the original search space
-            best_x_original = self.transform_search_space(best_x, inverse=True)
+            # transform the best_x back to the search space for plotting reasons
+            best_x_original = self.transform_search_space(best_x)
         ax[0].scatter(best_x_original, best_y, marker='*', s=200,
                       color='orange', label='Current Best Point', zorder=5)
         ax[0].axvline(x=best_x_original, color='orange', linestyle='--',
@@ -357,12 +360,17 @@ class BayesianOptimization:
         ax[0].grid()
         
         if self.sst is not None:
-            # let the tick to be the original search space
-            original_tick = self.transform_search_space(self.search_space, inverse=True)
-            ax[0].set_xticks(original_tick[:, 0])
-            ax[0].set_xticklabels([f'{t:.2f}' for t in original_tick[:, 0]])
-        
-        # plot sample history along iterations
+            # Create secondary x-axis at the top to show the 
+            # original search space values
+            ax_top = ax[0].secondary_xaxis('top')
+            ax_ticks_values = ax[0].get_xticks()
+            original_ticks_values = self.transform_search_space(ax_ticks_values, inverse=True)
+            ax_top.set_xticks(ax_ticks_values)
+            ax_top.set_xticklabels([f'{t:.5f}' for t in original_ticks_values])
+            ax_top.set_xlabel('x (original scale)')
+            ax[0].set_xlabel('x (log scale)')
+
+        # plot sample history along iterations                
         ax[1].plot(range(1, len(self.sampled_x) + 1),
                    self.sampled_y, marker='o', label='Sampled Points', color='k')
         # plot shaded area before the initial budget
@@ -380,7 +388,6 @@ class BayesianOptimization:
         ax[1].set_xticks(range(1, len(self.sampled_x)+1))
         ax[1].legend()
         ax[1].grid()
-        
         
         fig.suptitle('Bayesian Optimization History', fontsize=16)
         fig.tight_layout()
