@@ -1,0 +1,49 @@
+# Install the pre-commit hooks below with
+# 'pre-commit install'
+
+# Auto-update the version of the hooks with
+# 'pre-commit autoupdate'
+
+# Run the hooks on all files with
+# 'pre-commit run --all'
+
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+    -   id: check-ast
+    -   id: check-yaml
+    -   id: check-toml
+    -   id: check-added-large-files
+        args: ['--maxkb=10000']
+    -   id: check-docstring-first
+    -   id: check-executables-have-shebangs
+    -   id: check-merge-conflict
+    -   id: debug-statements
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: double-quote-string-fixer
+
+-   repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+        name: isort
+        args: ['--line-length=110']
+
+-   repo: https://github.com/pre-commit/mirrors-autopep8
+    rev: v2.0.4
+    hooks:
+    -   id: autopep8
+        name: autopep8-default
+    -   id: autopep8
+        name: autopep8-tests
+-   repo: https://github.com/PyCQA/flake8
+    rev: 7.3.0
+    hooks:
+    -   id: flake8
+        name: flake8_default
+        args: ['--ignore=E501,W605']
+    -   id: flake8
+        name: flake8_tests
+        args: ['--ignore=E501,W605']
