@@ -106,8 +106,14 @@ class ResNet(nn.Module):
         print(f'Model saved to {save_dir / filename}')
 
 
-def create_data_loader(batch_size=256, num_workers=2):
-    '''Data loader for Fashion-MNIST dataset'''
+def create_data_loader(batch_size=256, num_workers=0):
+    '''
+    Data loader for Fashion-MNIST dataset
+    Args:
+        batch_size (int): Batch size for the data loader.
+        num_workers (int): Number of workers for the data loader.
+        NOTE: num_workers=0 is used for docker compatibility
+    '''
     transform_train = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))

@@ -220,4 +220,4 @@ data
 *.pth
 
 # docker
-results_docker
+results/
