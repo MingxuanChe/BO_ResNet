@@ -17,13 +17,15 @@ RUN apt-get update && apt-get install -y \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir Pillow==10.0.0 && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip cache purge
 
 # Copy project
 COPY . .
 
 # Create results directory
-RUN mkdir -p /project/results && chmod 777 /project/results
+RUN mkdir -p /project/results && chmod 755 /project/results
 
 # Environment variables
 ENV PYTHONPATH=/project
