@@ -218,3 +218,6 @@ tests
 data
 # torch model
 *.pth
+
+# docker
+results_docker

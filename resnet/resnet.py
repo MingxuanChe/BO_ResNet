@@ -199,7 +199,6 @@ def train_restnet_with_lr(train_loader, test_loader, model=None,
     # final test accuracy
     final_test_accuracy = evaluate_accuracy(model, test_loader)
 
-    # log the final test accuracy to wandb
     return final_test_accuracy, model.state_dict()
 
 

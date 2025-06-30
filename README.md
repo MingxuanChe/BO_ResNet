@@ -61,6 +61,13 @@ Run the container:
 ```bash
 # Run with default settings
 docker run --rm bo-resnet
+
+# Run with volume mounting
+# On Linux
+docker run --rm -v $(pwd)/results_docker:/project/results_docker bo-resnet
+
+# On Windows
+docker run --rm -v $(pwd)/results_docker:/project/results_docker bo-resnet
 ```
 
 ## Usage
@@ -87,6 +94,7 @@ Examplary results can be found in `./results`, which contains the following
   - Exemplary output of the ResNet trained with the optimal learning rate
 
 ## Additional note
+- I like `pixi` and I recommend it
 - ResNet has three building blocks, implemented following the spirit of the original paper
 - GP and BO are implemented with `gpytorch`, which is also the main GP library used for my current projects
 - PEP8 is checked with `pre-commit`

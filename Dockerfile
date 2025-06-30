@@ -22,8 +22,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY . .
 
 # Environment variables
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/project
 ENV PYTHONUNBUFFERED=1
+
+VOLUME ["/project/results_docker"]
 
 # run main script
 CMD ["python", "main.py"]
