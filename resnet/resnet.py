@@ -1,29 +1,14 @@
+import sys
 import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from torch.optim import Adam
-import wandb
 import pathlib
 import matplotlib.pyplot as plt
-
-# set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# define options
-class Options(object):
-    def __init__(self, **kwargs):
-        super(Options, self).__init__()
-        self.__dict__.update(kwargs)
-
-resnet_config = Options(
-    # the original paper uses SGD; we use Adam instead
-    # training HPs
-    num_epochs=10,
-    minibatch_size=256,
-    default_learning_rate=0.05,
-    results_dir=pathlib.Path('results'),
-)
+# add the parent directory to the path
+sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
+from helper import set_seed, device, resnet_config, Options
 
 class ResNetBlock(nn.Module):
     '''
@@ -55,6 +40,7 @@ class ResNetBlock(nn.Module):
         self.relu = nn.ReLU() # no training parameter 
     
     def forward(self, x):
+        '''Forward pass of the ResNet block.'''
         identify = self.identity_layer(x)
         x = self.relu(self.batchnorm1(self.conv1(x)))
         x = self.batchnorm2(self.conv2(x))
@@ -65,7 +51,9 @@ class ResNetBlock(nn.Module):
 class ResNet(nn.Module):
     def __init__(self, num_classes=10):
         '''
-        Fashion-MNIST has 10 classes labelled 0-9
+        ResNet model for Fashion-MNIST dataset.
+        
+        NOTE: Fashion-MNIST has 10 classes labelled 0-9
         input images are of size 28x28x1 (grayscale)
         '''
         super(ResNet, self).__init__()
@@ -92,7 +80,7 @@ class ResNet(nn.Module):
         )
     
     def forward(self, x):
-        # print(f"Input shape: {x.shape}")
+        '''Forward pass of the ResNet model.'''
         x = self.relu(self.batchnorm1(self.conv1(x)))
         x = self.res_block1(x)
         x = self.res_block2(x)
@@ -103,11 +91,16 @@ class ResNet(nn.Module):
         x = self.classifier(x)
         
         return x
+
+    def save_model(self, save_dir, filename='resnet_model.pth'):
+        '''Save the model to the specified directory.'''
+        if not save_dir.exists():
+            save_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(self.state_dict(), save_dir / filename)
+        print(f'Model saved to {save_dir / filename}')
     
 def create_data_loader(batch_size=256, num_workers=2):
-    '''
-    data loader for Fashion-MNIST dataset
-    '''
+    '''Data loader for Fashion-MNIST dataset'''
     transform_train = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
@@ -129,6 +122,7 @@ def create_data_loader(batch_size=256, num_workers=2):
     return train_loader, test_loader
 
 def evaluate_accuracy(model, data_loader):
+    '''Evaluate the accuracy of the model on the given data loader.'''
     model.eval()
     correct_test = 0
     total_test = 0
@@ -143,7 +137,15 @@ def evaluate_accuracy(model, data_loader):
     return accuracy
 
 def train_restnet_with_lr(train_loader, test_loader, model=None,
+                          num_epoch=10,
                           learning_rate=0.01):
+    '''
+    Train the ResNet model with the given learning rate.
+    
+    Returns:
+        final_test_accuracy (float): The final test accuracy of the model.
+        model_state_dict (dict): The state dictionary of the trained model.
+    '''
     if model is None:
         model = ResNet().to(device)
     loss_fc = nn.CrossEntropyLoss()
@@ -152,13 +154,14 @@ def train_restnet_with_lr(train_loader, test_loader, model=None,
     
     
     # train loop
-    for epoch in range(resnet_config.num_epochs):
+    for epoch in range(num_epoch):
         model.train()
         # running loss and train accuracy
         running_loss = 0.0
         correct_train = 0
         total_train = 0
         
+        # minibatch loop
         for data, target in train_loader:
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
@@ -178,17 +181,28 @@ def train_restnet_with_lr(train_loader, test_loader, model=None,
                 
         # epoch test
         epoch_test_accuracy = evaluate_accuracy(model, test_loader)
-        print(f'Epoch: {epoch+1}/{resnet_config.num_epochs}, '
+        print(f'Epoch: {epoch+1}/{num_epoch}, '
               f'Loss: {epoch_loss:.4f}, '
               f'Train Accuracy: {epoch_train_accuracy:.2f}%, '
               f'Test Accuracy: {epoch_test_accuracy:.2f}%')
         
     # final test accuracy
     final_test_accuracy = evaluate_accuracy(model, test_loader)
-    return final_test_accuracy
 
-def visualize_classification_results(model, data_loader):
-    # get some test images
+    # log the final test accuracy to wandb
+    return final_test_accuracy, model.state_dict()
+
+def visualize_classification_results(model, data_loader, metric=None,
+                                     save_dir=None):
+    '''
+    Visualize the classification results of the model on the test dataset.
+    Args:
+        model (nn.Module): The trained ResNet model.
+        data_loader (DataLoader): DataLoader for the test dataset.
+        metric (dict, optional): Dictionary containing metrics to add to the plot title.
+        save_dir (pathlib.Path, optional): Directory to save the plot.
+    '''
+    # get test images
     images, class_label = next(iter(data_loader))
     images, class_label = images.to(device), class_label.to(device)
     
@@ -209,26 +223,49 @@ def visualize_classification_results(model, data_loader):
         else:
             ax.title.set_color('red')
         ax.axis('off')
+    if metric is not None:
+        fig.suptitle(f'Classification Results on Fashion-MNIST\n'
+                     f'Test Accuracy: {metric["test_accuracy"]:.2f}%', fontsize=16)
     plt.tight_layout()
-
+    
     # save the figure for sanity check
-    fig_path = resnet_config.results_dir / 'classification_results.png'
-    fig_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(fig_path)
+    if save_dir is not None:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_dir / 'classification_results.png')
+        print(f'Classification results saved to {save_dir / "classification_results.png"}')
+    
+    return fig, axes
 
-def main():
-    train_loader, test_loader = create_data_loader(batch_size=resnet_config.minibatch_size)
+
+def main_resnet(config: Options):
+    '''Main function to train the ResNet model on Fashion-MNIST dataset once.
+    
+    Args:
+        config (Options): Configuration object containing hyperparameters for BO and ResNet.
+        For details, see the docstring in helper.py -> Options.
+    '''
+    set_seed(config.seed, device=device)
+    train_loader, test_loader = create_data_loader(batch_size=config.minibatch_size)
     model = ResNet().to(device)
     
-    accuracy = train_restnet_with_lr(model, train_loader, test_loader,
-                          learning_rate=resnet_config.default_learning_rate)
+    accuracy = train_restnet_with_lr(train_loader, test_loader, model, 
+                                     num_epoch=config.resnet_num_epochs,
+                                     learning_rate=config.resnet_learning_rate)
+    
     print(f'Final Test Accuracy: {accuracy:.2f}%')
+    metric = {
+        'test_accuracy': accuracy
+    }
     
     # visualize the training results
-    visualize_classification_results(model, test_loader)
+    visualize_classification_results(model, test_loader, 
+                                     metric=metric, 
+                                     save_dir=config.results_dir)
     
     # save the model
-    torch.save(model.state_dict(), 'resnet_final.pth')
+    # torch.save(model.state_dict(), 'resnet_final.pth')
+    model.save_model(config.results_dir/'model', 
+                     filename='resnet_final.pth')
 
 if __name__ == '__main__':
-    main()
+    main_resnet(config=resnet_config)

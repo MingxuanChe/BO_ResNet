@@ -10,19 +10,18 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from copy import deepcopy
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
-from helper import set_seed, device, bo_config
+from helper import set_seed, device, bo_config, Options
+import tqdm
 
 # set seaborn style
 sns.set_theme(style='darkgrid', palette='deep')
 
 '''
-we let BO consider maximization problem
+NOTE: we let BO consider maximization problem
 '''
 
 def get_sobol_init(num_sample, num_dim=1, bounds=None):
-    """
-    Generate Sobol sequence samples in the specified bounds
-    """
+    """Generate Sobol sequence samples in the specified bounds"""
     # NOTE: sobol sequence need to set the seed explicitly
     sobol = qmc.Sobol(d=num_dim, seed=bo_config.seed)  # Add explicit seed for reproducibility
     samples = sobol.random(n=num_sample)
@@ -40,9 +39,7 @@ class ExactGP(gpytorch.models.ExactGP):
                  mean_module=gpytorch.means.ConstantMean(),
                  kernel='RBF',
                  ):
-        """
-        Initialize the ExactGP model with specified kernel
-        """
+        """Initialize the ExactGP model with specified kernel"""
         super(ExactGP, self).__init__(train_x, train_y, likelihood)
         self.mean_module = mean_module
         if kernel == 'RBF':
@@ -51,9 +48,7 @@ class ExactGP(gpytorch.models.ExactGP):
             self.covar_module = ScaleKernel(gpytorch.kernels.MaternKernel(nu=2.5))
         
     def forward(self, x):
-        """
-        Forward pass
-        """
+        """Forward pass"""
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
@@ -65,10 +60,14 @@ class BayesianOptimization:
                  ):
         """
         Initialize the Bayesian Optimization model
+        
+        Args:
+            unknown_function (callable): The function to be optimized.
+            bo_config (Options): Configuration object containing hyperparameters for BO.
         """
         self.unknown_function = unknown_function
         self.config = bo_config
-        # self.search_space = search_space if search_space is not None else np.array([[0.0, 1.0]])
+        self.kernel = self.config.kernel
         self.search_space = self.config.hp_search_space
         self.sst = self.config.hp_search_space_transformation
         if self.sst is not None:
@@ -77,14 +76,17 @@ class BayesianOptimization:
             
         self.budget = self.config.budget
         self.remaining_budget = deepcopy(self.budget)
-        self.kernel = self.config.kernel
 
         # sample history        
         self.sampled_x = []
         self.sampled_y = []
+        # store the model state dicts for easy access later
+        self.model_history = []
         
     def transform_search_space(self, x, inverse=False):
-        # """
+        """
+        Transform the search
+        """
         if self.sst == 'log10':
             transformed_x = np.log10(x) if not inverse else 10 ** x
         else:
@@ -112,13 +114,16 @@ class BayesianOptimization:
             sobol_samples = get_sobol_init(num_sample=init_budget, 
                                            bounds=self.search_space).reshape(-1).tolist()
             # for sample in sobol_samples:
-            for i, sample in enumerate(sobol_samples):
+            pbar = tqdm.tqdm(sobol_samples, desc="Initializing BO with Sobol samples", unit="samples")
+            for i, sample in enumerate(pbar):
+            # for i, sample in enumerate(sobol_samples):
                 sample_original = self.transform_search_space(sample, inverse=True) \
                     if self.sst is not None else sample
                 print(f"Evaluating sample {i + 1}/{init_budget}: {sample_original}") 
-                y_value = self.unknown_function(sample_original)
+                y_value, model_state_dict = self.unknown_function(sample_original)
                 self.sampled_x.append(sample)
                 self.sampled_y.append(y_value)
+                self.model_history.append(model_state_dict)
 
             self.train_x = torch.tensor(self.sampled_x, dtype=torch.float32).reshape(-1)
             self.train_y = torch.tensor(self.sampled_y, dtype=torch.float32).reshape(-1)
@@ -155,7 +160,8 @@ class BayesianOptimization:
     def expected_improvment(self, mean, std, incumbent, xi=0.0):
         '''
         Calculate the expected improvement (EI) given the mean, std, and incumbent value.
-        NOTE: in the online lecture, minimization is used; in the BO tutorial paper + Murphy's book, maximization is used.
+        NOTE: In the online lecture, minimization is used; in the BO tutorial paper + Murphy's book, maximization is used.
+        NOTE: In this task, we can naturally consider maximization
         '''
         # avoid division by zero
         if torch.isclose(std, torch.tensor(0.0)):
@@ -195,7 +201,8 @@ class BayesianOptimization:
     def optimize_acquisition(self, acuisition_func): 
         '''
         maximize the acquisition function with 
-        scipy.optimize.minimize (similary to BoTorch)
+        scipy.optimize.minimize (learned from BoTorch docs
+        cf. https://botorch.org/docs/optimization#using-scipy-optimizers-on-tensors)
         '''
         best_x = None
         best_acquisition_value = -np.inf
@@ -220,11 +227,21 @@ class BayesianOptimization:
     def bayesian_optimization(self, init_budget=3):
         """
         Perform Bayesian Optimization
+        
+        Args:
+            init_budget (int): Initial budget for the Sobol sequence initialization.
+        Returns:
+            tuple: The best found point and its corresponding value.
+        
         """
         # 1. initialize the dataset
         self.initialize_bayesian_optimization(method='sobol', init_budget=init_budget)
         # 2. loop until budget
-        for i in range(init_budget, self.budget):
+        pbar = tqdm.tqdm(range(init_budget, self.budget),
+                         desc="BO Progress",
+                         unit="iterations",)
+        # for i in range(init_budget, self.budget)
+        for i in pbar:
             print(f"Starting iteration {i + 1}")
             # GP
             self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
@@ -241,10 +258,11 @@ class BayesianOptimization:
             next_x_original = self.transform_search_space(next_x, inverse=True) \
                 if self.sst is not None else next_x
             print(f"Evaluating next x: {next_x_original}")
-            next_y = self.unknown_function(next_x_original)
+            next_y, model_state_dict = self.unknown_function(next_x_original)
             # 6. update the training data
             self.sampled_x.append(next_x)
             self.sampled_y.append(next_y)
+            self.model_history.append(model_state_dict)
             
             self.train_x = torch.tensor(self.sampled_x, dtype=torch.float32)
             self.train_y = torch.tensor(self.sampled_y, dtype=torch.float32)
@@ -264,18 +282,16 @@ class BayesianOptimization:
         Plot the results of the Bayesian Optimization iterations
         """
         x = np.linspace(self.search_space[0, 0], self.search_space[0, 1], 100)
-        # the true objective might be expensive to evaluate
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             self.gp_model.eval()
             self.likelihood.eval()
             x_tensor = torch.tensor(x, dtype=torch.float32).reshape(-1, 1)
             pred = self.likelihood(self.gp_model(x_tensor))
-            # get the mean and std of the GP model
             mean = pred.mean.numpy()
             std = pred.stddev.numpy()
         
         fig, ax= plt.subplots(2, 1, figsize=(10, 8))
-        # plot the objective function
+        # plot the objective function (ommited for simplicity)
         # ax[0].plot(x, y, label='Objective Function', color='r')
         ax[0].plot(x, mean, label='GP Mean', color='blue')
         ax[0].fill_between(x, mean - s * std, mean + s * std, 
@@ -399,12 +415,25 @@ class BayesianOptimization:
         
 def simple_objectve_function(x):
     """
-    An example objective function
+    An example objective function to test BO
+    
+    Args:
+        x (float or np.ndarray): Input value(s) for the function.
+    Returns:
+        tuple: A tuple containing the function value and None (for compatibility).
+        model_state_dict: placeholder for model state dict
     """
-    return -(x - 0.5)**2 + 3 * np.sin(x * 3) + 0.5
+    model_state_dict = None
+    return -(x - 0.5)**2 + 3 * np.sin(x * 3) + 0.5, model_state_dict
 
 
-def main(config):
+def main_bo(config: Options):
+    '''
+    Main function to run the Bayesian Optimization with a simple objective function.
+    Args:
+        config (Options): Configuration object containing hyperparameters for BO.
+        For details, see the docstring in helper.py -> Options.
+    '''
     set_seed(config.seed, device=device)
     bo = BayesianOptimization(unknown_function=simple_objectve_function,
                               bo_config=config)
@@ -412,4 +441,4 @@ def main(config):
     bo.plot_bo_history()
 
 if __name__ == '__main__':
-    main(config=bo_config)
+    main_bo(config=bo_config)
