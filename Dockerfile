@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install -y \
     make \
     python3-dev \
     python3-pip \
-    git
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
@@ -21,11 +22,15 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy project
 COPY . .
 
+# Create results directory
+RUN mkdir -p /project/results && chmod 777 /project/results
+
 # Environment variables
 ENV PYTHONPATH=/project
 ENV PYTHONUNBUFFERED=1
 
-VOLUME ["/project/results_docker"]
+# Define volume
+VOLUME ["/project/results"]
 
-# run main script
+# Run main script
 CMD ["python", "main.py"]

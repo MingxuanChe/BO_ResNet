@@ -64,10 +64,10 @@ docker run --rm bo-resnet
 
 # Run with volume mounting
 # On Linux
-docker run --rm -v $(pwd)/results_docker:/project/results_docker bo-resnet
+docker run --rm -v $(pwd)/results:/project/results bo-resnet
 
 # On Windows
-docker run --rm -v $(pwd)/results_docker:/project/results_docker bo-resnet
+docker run --rm -v %cd%/results:/project/results bo-resnet
 ```
 
 ## Usage
