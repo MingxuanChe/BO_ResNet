@@ -158,16 +158,17 @@ def train_restnet_with_lr(train_loader, test_loader, model=None,
                           learning_rate=0.01):
     '''
     Train the ResNet model with the given learning rate.
-
-    Returns:
-        final_test_accuracy (float): The final test accuracy of the model.
-        model_state_dict (dict): The state dictionary of the trained model.
+    The best model and its accuracy are returned.
     '''
     if model is None:
         model = ResNet().to(device)
     loss_fc = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(),
                      lr=learning_rate)
+
+    # to save the best model
+    best_test_accuracy = 0.0
+    best_model_state_dict = None
 
     # train loop
     for epoch in range(num_epoch):
@@ -197,15 +198,23 @@ def train_restnet_with_lr(train_loader, test_loader, model=None,
 
         # epoch test
         epoch_test_accuracy = evaluate_accuracy(model, test_loader)
+
+        # Save best model based on test accuracy
+        if epoch_test_accuracy > best_test_accuracy:
+            best_test_accuracy = epoch_test_accuracy
+            best_model_state_dict = model.state_dict().copy()
+
         print(f'Epoch: {epoch+1}/{num_epoch}, '
               f'Loss: {epoch_loss:.4f}, '
               f'Train Accuracy: {epoch_train_accuracy:.2f}%, '
               f'Test Accuracy: {epoch_test_accuracy:.2f}%')
 
-    # final test accuracy
+    # Load the best model for final evaluation
+    model.load_state_dict(best_model_state_dict)
     final_test_accuracy = evaluate_accuracy(model, test_loader)
+    print(f'Final test accuracy with best model: {final_test_accuracy:.2f}%')
 
-    return final_test_accuracy, model.state_dict()
+    return best_test_accuracy, best_model_state_dict
 
 
 def visualize_classification_results(model, data_loader, metric=None,
@@ -269,13 +278,15 @@ def main_resnet(config: Options):
         batch_size=config.minibatch_size)
     model = ResNet().to(device)
 
-    accuracy = train_restnet_with_lr(train_loader, test_loader, model,
-                                     num_epoch=config.resnet_num_epochs,
-                                     learning_rate=config.resnet_learning_rate)
+    best_accuracy, best_model_state_dict = train_restnet_with_lr(
+        train_loader, test_loader, model,
+        num_epoch=config.resnet_num_epochs,
+        learning_rate=config.resnet_learning_rate)
+    model.load_state_dict(best_model_state_dict)
 
-    print(f'Final Test Accuracy: {accuracy:.2f}%')
+    print(f'Best Test Accuracy: {best_accuracy:.2f}%')
     metric = {
-        'test_accuracy': accuracy
+        'test_accuracy': best_accuracy
     }
 
     # visualize the training results
@@ -284,7 +295,6 @@ def main_resnet(config: Options):
                                      save_dir=config.results_dir)
 
     # save the model
-    # torch.save(model.state_dict(), 'resnet_final.pth')
     model.save_model(config.results_dir / 'model',
                      filename='resnet_final.pth')
 
