@@ -8,10 +8,12 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-from helper import Options, device, resnet_config, set_seed
-
 # add the parent directory to the path
-sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
+try:
+    from helper import Options, device, resnet_config, set_seed
+except ImportError:
+    sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
+    from helper import Options, device, resnet_config, set_seed
 
 
 class ResNetBlock(nn.Module):
@@ -80,10 +82,22 @@ class ResNet(nn.Module):
                                       )
         # classifier
         self.average_pooling = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier = nn.Sequential(
-            nn.Linear(64, num_classes),
-            nn.Softmax(dim=1)  # softmax for multi-class classification
-        )
+        self.classifier = nn.Linear(64, num_classes)
+
+    #     # Initialize weights
+    #     self._initialize_weights()
+
+    # def _initialize_weights(self):
+    #     """Initialize model weights using He initialization"""
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Conv2d):
+    #             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    #         elif isinstance(m, nn.BatchNorm2d):
+    #             nn.init.constant_(m.weight, 1)
+    #             nn.init.constant_(m.bias, 0)
+    #         elif isinstance(m, nn.Linear):
+    #             nn.init.normal_(m.weight, 0, 0.01)
+    #             nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         '''Forward pass of the ResNet model.'''
