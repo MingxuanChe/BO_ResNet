@@ -12,10 +12,14 @@ from gpytorch.kernels import RBFKernel, ScaleKernel
 from scipy.optimize import minimize
 from scipy.stats import qmc
 
-from helper import Options, bo_config, device, set_seed
+import wandb
 
-sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
-
+# check whether helper.py is in the system path
+try:
+    from helper import Options, bo_config, device, set_seed
+except ImportError:
+    sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
+    from helper import Options, bo_config, device, set_seed
 
 # set seaborn style
 sns.set_theme(style='darkgrid', palette='deep')
@@ -44,8 +48,9 @@ class ExactGP(gpytorch.models.ExactGP):
                  likelihood=gpytorch.likelihoods.GaussianLikelihood(),
                  mean_module=gpytorch.means.ConstantMean(),
                  kernel='RBF',
+                 config=None,
                  ):
-        """Initialize the ExactGP model with specified kernel"""
+        """Initialize the ExactGP model"""
         super(ExactGP, self).__init__(train_x, train_y, likelihood)
         self.mean_module = mean_module
         if kernel == 'RBF':
@@ -53,6 +58,73 @@ class ExactGP(gpytorch.models.ExactGP):
         elif kernel == 'Matern':
             self.covar_module = ScaleKernel(
                 gpytorch.kernels.MaternKernel(nu=2.5))
+
+        # add priors
+        self._add_priors(config)
+
+    def _add_priors(self, config):
+        """Add priors to kernel parameters based on config"""
+
+        print('Before setting priors, kernel parameters are:')
+        print(
+            f'Lengthscale: {self.covar_module.base_kernel.lengthscale.item()}')
+        print(f'Outputscale: {self.covar_module.outputscale.item()}')
+        print(f'Noise: {self.likelihood.noise.item()}')
+
+        if hasattr(config, 'lengthscale_init_mean'):
+            self.covar_module.base_kernel.initialize(
+                lengthscale=torch.tensor(config.lengthscale_init_mean)
+            )
+
+        if hasattr(config, 'outputscale_init_mean'):
+            self.covar_module.initialize(
+                outputscale=torch.tensor(config.outputscale_init_mean)
+            )
+        if hasattr(config, 'noise_init_var'):
+            self.likelihood.initialize(
+                noise=torch.tensor(config.noise_init_var)
+            )
+            print('kernel parameters initialized with config values:')
+            print(
+                f'Lengthscale: {self.covar_module.base_kernel.lengthscale.item()}')
+            print(f'Outputscale: {self.covar_module.outputscale.item()}')
+            print(f'Noise: {self.likelihood.noise.item()}')
+
+        # lengthscale prior
+        if hasattr(config, 'lengthscale_prior_mean') and \
+                hasattr(config, 'lengthscale_prior_std'):
+            self.covar_module.base_kernel.register_prior(
+                'lengthscale_prior',
+                gpytorch.priors.NormalPrior(
+                    config.lengthscale_prior_mean,
+                    config.lengthscale_prior_std
+                ),
+                'lengthscale',
+            )
+
+        # outputscale prior
+        if hasattr(config, 'outputscale_prior_mean') and \
+                hasattr(config, 'outputscale_prior_std'):
+            self.covar_module.register_prior(
+                'outputscale_prior',
+                gpytorch.priors.NormalPrior(
+                    config.outputscale_prior_mean,
+                    config.outputscale_prior_std
+                ),
+                'outputscale',
+            )
+
+        # Noise prior
+        if hasattr(config, 'noise_prior_mean') and \
+           hasattr(config, 'noise_prior_std'):
+            self.likelihood.noise_covar.register_prior(
+                'noise_prior',
+                gpytorch.priors.NormalPrior(
+                    config.noise_prior_mean,
+                    config.noise_prior_std,
+                ),
+                'noise',
+            )
 
     def forward(self, x):
         """Forward pass"""
@@ -119,7 +191,10 @@ class BayesianOptimization:
 
         return incumbent_index, incumbent_x, incumbent_y
 
-    def initialize_bayesian_optimization(self, method='sobol', init_budget=3):
+    def initialize_bayesian_optimization(self,
+                                         method='sobol',
+                                         init_budget=3):
+
         if method == 'sobol' and init_budget > 0:
             sobol_samples = \
                 get_sobol_init(num_sample=init_budget,
@@ -143,12 +218,13 @@ class BayesianOptimization:
                 self.sampled_y.append(y_value)
                 self.model_history.append(model_state_dict)
 
-            self.train_x = torch.tensor(
-                self.sampled_x, dtype=torch.float32).reshape(-1)
-            self.train_y = torch.tensor(
-                self.sampled_y, dtype=torch.float32).reshape(-1)
         else:
             raise ValueError(f'Unknown initialization method: {method}')
+
+        self.train_x = torch.tensor(
+            self.sampled_x, dtype=torch.float32).reshape(-1)
+        self.train_y = torch.tensor(
+            self.sampled_y, dtype=torch.float32).reshape(-1)
 
         # find the current incumbent
         _, incumbent_x, incumbent_y = self.get_incumbent()
@@ -177,6 +253,12 @@ class BayesianOptimization:
             if _ % (self.config.gp_num_epochs / 5) == 0:
                 print(f'Epoch {_}: GP Loss = {loss.item()}')
 
+        print('Kernel parameters after fitting:')
+        print(
+            f'Lengthscale: {self.gp_model.covar_module.base_kernel.lengthscale.item()}')
+        print(f'Outputscale: {self.gp_model.covar_module.outputscale.item()}')
+        print(f'Noise: {self.likelihood.noise.item()}')
+
     def expected_improvment(self, mean, std, incumbent, xi=0.0):
         '''
         Calculate the expected improvement (EI) given the mean, std, and incumbent value.
@@ -193,8 +275,6 @@ class BayesianOptimization:
             torch.distributions.Normal(0, 1).cdf(z)
         exploration_term = std * \
             torch.distributions.Normal(0, 1).log_prob(z).exp()
-        # exploration_term = std * norm.pdf(z.item())
-        # exploration_term = torch.tensor(exploration_term, dtype=torch.float32)
 
         acquisition_value = exploitation_term + exploration_term
         return acquisition_value
@@ -259,7 +339,8 @@ class BayesianOptimization:
         """
         # 1. initialize the dataset
         self.initialize_bayesian_optimization(
-            method='sobol', init_budget=init_budget)
+            method=self.config.bo_init_method,
+            init_budget=init_budget)
         # 2. loop until budget
         pbar = tqdm.tqdm(range(init_budget, self.budget),
                          desc='BO Progress',
@@ -270,7 +351,8 @@ class BayesianOptimization:
             # GP
             self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
             self.gp_model = ExactGP(self.train_x, self.train_y,
-                                    self.likelihood, kernel=self.kernel)
+                                    self.likelihood, kernel=self.kernel,
+                                    config=self.config)
 
             # 3. fit the GP model
             self.fit()
@@ -296,9 +378,36 @@ class BayesianOptimization:
             _, incumbent_x, incumbent_y = self.get_incumbent()
             print(f'Current incumbent x: {incumbent_x}, y: {incumbent_y}\n')
 
+            # Log to wandb
+            try:
+                wandb.log({
+                    'iteration': i + 1,
+                    'next_x': next_x_original,
+                    'next_y': next_y,
+                    'incumbent_x': incumbent_x,
+                    'incumbent_y': incumbent_y,
+                    'num_samples': len(self.sampled_x)
+                })
+            except Exception:
+                pass
+
         # return the best found point
         _, best_x, best_y = self.get_incumbent()
         print(f'Best x: {best_x}, Best y: {best_y}')
+
+        # final log
+        try:
+            wandb.log({
+                'bo_final_best_x': best_x,
+                'bo_final_best_y': best_y,
+                'bo_total_evaluations': len(self.sampled_x),
+                'bo_improvement': best_y - min(self.sampled_y),
+                'bo_sampled_x': self.sampled_x,
+                'bo_sampled_y': self.sampled_y
+            })
+        except Exception:
+            pass
+
         return best_x, best_y
 
     def plot_iteration_results(self, i, next_x, s=3):
@@ -316,6 +425,8 @@ class BayesianOptimization:
 
         fig, ax = plt.subplots(2, 1, figsize=(10, 8))
         # plot the objective function (ommited for simplicity)
+        # y = np.array([self.unknown_function(xi)[0]
+        #               for xi in x])
         # ax[0].plot(x, y, label='Objective Function', color='r')
         ax[0].plot(x, mean, label='GP Mean', color='blue')
         ax[0].fill_between(x, mean - s * std, mean + s * std,
