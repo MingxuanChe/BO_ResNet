@@ -13,8 +13,6 @@ from gpytorch.kernels import RBFKernel, ScaleKernel
 from scipy.optimize import minimize
 from scipy.stats import qmc
 
-import wandb
-
 matplotlib.use('Agg')
 
 
@@ -386,35 +384,9 @@ class BayesianOptimization:
             _, incumbent_x, incumbent_y = self.get_incumbent()
             print(f'Current incumbent x: {incumbent_x}, y: {incumbent_y}\n')
 
-            # Log to wandb
-            try:
-                wandb.log({
-                    'iteration': i + 1,
-                    'next_x': next_x_original,
-                    'next_y': next_y,
-                    'incumbent_x': incumbent_x,
-                    'incumbent_y': incumbent_y,
-                    'num_samples': len(self.sampled_x)
-                })
-            except Exception:
-                pass
-
         # return the best found point
         _, best_x, best_y = self.get_incumbent()
         print(f'Best x: {best_x}, Best y: {best_y}')
-
-        # final log
-        try:
-            wandb.log({
-                'bo_final_best_x': best_x,
-                'bo_final_best_y': best_y,
-                'bo_total_evaluations': len(self.sampled_x),
-                'bo_improvement': best_y - min(self.sampled_y),
-                'bo_sampled_x': self.sampled_x,
-                'bo_sampled_y': self.sampled_y
-            })
-        except Exception:
-            pass
 
         return best_x, best_y
 
