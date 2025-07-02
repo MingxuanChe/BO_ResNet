@@ -3,6 +3,7 @@ import sys
 from copy import deepcopy
 
 import gpytorch
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -13,6 +14,9 @@ from scipy.optimize import minimize
 from scipy.stats import qmc
 
 import wandb
+
+matplotlib.use('Agg')
+
 
 # check whether helper.py is in the system path
 try:
@@ -115,13 +119,13 @@ class ExactGP(gpytorch.models.ExactGP):
             )
 
         # Noise prior
-        if hasattr(config, 'noise_prior_mean') and \
-           hasattr(config, 'noise_prior_std'):
+        if hasattr(config, 'noise_prior_concentration') and \
+           hasattr(config, 'noise_prior_rate'):
             self.likelihood.noise_covar.register_prior(
                 'noise_prior',
-                gpytorch.priors.NormalPrior(
-                    config.noise_prior_mean,
-                    config.noise_prior_std,
+                gpytorch.priors.GammaPrior(
+                    concentration=config.noise_prior_concentration,
+                    rate=config.noise_prior_rate
                 ),
                 'noise',
             )
@@ -222,7 +226,7 @@ class BayesianOptimization:
             raise ValueError(f'Unknown initialization method: {method}')
 
         self.train_x = torch.tensor(
-            self.sampled_x, dtype=torch.float32).reshape(-1)
+            self.sampled_x, dtype=torch.float32).reshape(-1, 1)
         self.train_y = torch.tensor(
             self.sampled_y, dtype=torch.float32).reshape(-1)
 
@@ -244,14 +248,15 @@ class BayesianOptimization:
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(
             self.likelihood, self.gp_model)
 
-        for _ in range(self.config.gp_num_epochs):
+        for epoch in range(self.config.gp_num_epochs):
             optimizer.zero_grad()
             output = self.gp_model(self.train_x)
             loss = -mll(output, self.train_y).sum()
             loss.backward()
             optimizer.step()
-            if _ % (self.config.gp_num_epochs / 5) == 0:
-                print(f'Epoch {_}: GP Loss = {loss.item()}')
+
+            if epoch % max(1, self.config.gp_num_epochs // 5) == 0:
+                print(f'Epoch {epoch}: GP Loss = {loss.item()}')
 
         print('Kernel parameters after fitting:')
         print(
@@ -309,6 +314,7 @@ class BayesianOptimization:
         '''
         best_x = None
         best_acquisition_value = -np.inf
+        np.random.seed(self.config.seed)
 
         for _ in range(self.config.acquisitiion_optimization_budget):
             x_0 = np.random.uniform(self.search_space[:, 0],
@@ -370,8 +376,10 @@ class BayesianOptimization:
             self.sampled_y.append(next_y)
             self.model_history.append(model_state_dict)
 
-            self.train_x = torch.tensor(self.sampled_x, dtype=torch.float32)
-            self.train_y = torch.tensor(self.sampled_y, dtype=torch.float32)
+            self.train_x = torch.tensor(
+                self.sampled_x, dtype=torch.float32).reshape(-1, 1)
+            self.train_y = torch.tensor(
+                self.sampled_y, dtype=torch.float32).reshape(-1)
 
             print(f'Iteration {i + 1}: Next x = {next_x}, Next y = {next_y}')
             # update the incumbent
@@ -442,8 +450,20 @@ class BayesianOptimization:
         ax[0].grid()
 
         # plot the acquisition function
-        acquisition_values = [self.acquisition_value_at(
-            torch.tensor([[xi]], dtype=torch.float32)).item() for xi in x]
+        x_tensor = torch.tensor(x, dtype=torch.float32).reshape(-1, 1)
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            self.gp_model.eval()
+            self.likelihood.eval()
+            pred = self.likelihood(self.gp_model(x_tensor))
+            mean_vec = pred.mean
+            std_vec = pred.stddev
+            incumbent = torch.max(self.train_y)
+
+            acquisition_values = []
+            for mean_val, std_val in zip(mean_vec, std_vec):
+                ei_val = self.expected_improvment(mean_val, std_val, incumbent)
+                acquisition_values.append(ei_val.item())
+
         ax[1].plot(x, acquisition_values,
                    label='Acquisition Function', color='green')
         ax[1].scatter(next_x, self.acquisition_value_at(
@@ -480,6 +500,7 @@ class BayesianOptimization:
             f'bo_iterations_results_{i + 1}.png'
         fig_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(fig_path)
+        plt.close(fig)
 
     def plot_bo_history(self, s=3):
         """
@@ -560,6 +581,7 @@ class BayesianOptimization:
         fig_path = self.config.results_dir / 'bo_history.png'
         fig_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(fig_path)
+        plt.close(fig)
 
 
 def simple_objectve_function(x):
