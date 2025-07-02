@@ -140,15 +140,26 @@ if __name__ == '__main__':
     # train with log10 transformation for learning rate
     print('Running Bayesian Optimization for ResNet with log10 '
           'transformation for learning rate...')
-    main(config=task_config)
+    # main(config=task_config)
 
     # Comment out the following to test without the log10 transformation
     # or check the results in the saved_results_no_transform directory
-    # import pathlib
-    # from copy import deepcopy
-    # print('Running Bayesian Optimization for ResNet without'
-    #       ' log10 transformation for learning rate...')
-    # no_transform_task_config = deepcopy(task_config)
-    # no_transform_task_config.hp_search_space_transformation = None
-    # no_transform_task_config.results_dir = pathlib.Path('results_no_transform')
-    # main(config=no_transform_task_config)
+    import pathlib
+    from copy import deepcopy
+    print('Running Bayesian Optimization for ResNet without'
+          ' log10 transformation for learning rate...')
+    no_transform_task_config = deepcopy(task_config)
+    no_transform_task_config.hp_search_space_transformation = None
+    no_transform_task_config.results_dir = pathlib.Path('results_no_transform')
+    # add kernel piror
+    no_transform_task_config.kernel = 'Matern'
+    no_transform_task_config.lengthscale_init_mean = 0.05
+    no_transform_task_config.outputscale_init_mean = 40
+    no_transform_task_config.noise_init_var = 0.1
+    no_transform_task_config.lengthscale_prior_mean = 0.05
+    no_transform_task_config.lengthscale_prior_std = 0.2
+    no_transform_task_config.outputscale_prior_mean = 40
+    no_transform_task_config.outputscale_prior_std = 20.0
+    no_transform_task_config.noise_prior_concentration = 0.1
+    no_transform_task_config.noise_prior_rate = 0.5
+    main(config=no_transform_task_config)
